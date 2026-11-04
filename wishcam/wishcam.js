@@ -192,7 +192,8 @@
       introTimer: 0, entry: null, prevOverflow: '', dbgAt: 0, lastScore: 0,
       /* 朝向自校准：微信安卓那边给的是「传感器朝向」的横屏帧，画面躺了 90°，
          手能检出来、手势分类器却一律给 None —— 于是怎么比划都不触发。 */
-      rot: 0, rotIdx: -1, probing: false, probeSince: 0, lastGoodAt: 0, rc: null, rcx: null
+      rot: 0, dispRot: 0, rotIdx: -1, probing: false, probeSince: 0, lastGoodAt: 0,
+      sweeps: 0, rotGaveUp: false
     };
     var ROT_CANDS = [90, 270, 180, 0];
 
@@ -452,7 +453,8 @@
           }
           S.videoReady = true;
           /* 画面尺寸这时才准：预览框按真实朝向重排，校准计时也从这一刻起算 */
-          S.rot = 0; S.probing = false; S.rotIdx = -1; S.lastGoodAt = nowMs();
+          S.rot = 0; S.dispRot = 0; S.probing = false; S.rotIdx = -1;
+          S.sweeps = 0; S.rotGaveUp = false; S.lastGoodAt = nowMs();
           layoutPreview();
           if (S.engineState === 'ready') setStatus('把手伸进来，离镜头一臂远', '比 🤟 🖐 ✌️ ✊');
           else if (S.engineState === 'error') setStatus('镜头开了，手势引擎没加载上', '可以先用手点');
@@ -617,28 +619,32 @@
       }
     }
 
-    /* 喂给识别器和画到屏上的，是同一份「转正后的画面」 */
-    function effFrame() {
+    /* 推理用的转正和显示用的转正是两回事：校准期间只动喂给模型的那份，
+       屏上的预览不许跟着转，否则手一停就看见画面一格一格翻。 */
+    var RCF = { rot: -1, c: null, x: null };
+    var RCD = { rot: -1, c: null, x: null };
+    function rotFrame(rot, cache) {
       var vw = (video && video.videoWidth) || 640, vh = (video && video.videoHeight) || 480;
-      return (S.rot === 90 || S.rot === 270) ? { w: vh, h: vw } : { w: vw, h: vh };
-    }
-    function frameForInfer() {
-      if (!S.rot) return video;
-      var vw = video.videoWidth, vh = video.videoHeight, e = effFrame();
-      if (!S.rc || S.rc.width !== e.w || S.rc.height !== e.h) {
-        S.rc = document.createElement('canvas');
-        S.rc.width = e.w; S.rc.height = e.h;
-        S.rcx = S.rc.getContext('2d');
+      var swap = (rot === 90 || rot === 270);
+      var w = swap ? vh : vw, h = swap ? vw : vh;
+      if (!rot) return { el: video, w: vw, h: vh };
+      if (!cache.c || cache.rot !== rot || cache.c.width !== w || cache.c.height !== h) {
+        cache.c = document.createElement('canvas');
+        cache.c.width = w; cache.c.height = h;
+        cache.x = cache.c.getContext('2d');
+        cache.rot = rot;
       }
-      var g = S.rcx;
+      var g = cache.x;
       g.save();
-      g.clearRect(0, 0, e.w, e.h);
-      g.translate(e.w / 2, e.h / 2);
-      g.rotate(S.rot * Math.PI / 180);
+      g.clearRect(0, 0, w, h);
+      g.translate(w / 2, h / 2);
+      g.rotate(rot * Math.PI / 180);
       g.drawImage(video, -vw / 2, -vh / 2, vw, vh);
       g.restore();
-      return S.rc;
+      return { el: cache.c, w: w, h: h };
     }
+    function effFrame() { return rotFrame(S.dispRot, RCD); }
+    function frameForInfer() { return rotFrame(S.rot, RCF); }
 
     function detect(now) {
       if (!S.rec || !S.videoReady || !S.cameraOn) return;
@@ -646,7 +652,7 @@
       if (now - S.lastDetect < 85) return;
       S.lastDetect = now;
       var res;
-      try { res = S.rec.recognizeForVideo(frameForInfer(), now); }
+      try { res = S.rec.recognizeForVideo(frameForInfer().el, now); }
       catch (e) {
         S.engineError = String((e && e.message) || e);
         S.engineState = 'error';
@@ -683,19 +689,23 @@
         if (S.lastGesture && now - S.lastGestureAt > 900) S.lastGesture = '';
         if (!S.touchMode) setStatus('把手伸进来，离镜头一臂远', '比 🤟 🖐 ✌️ ✊');
       }
-      /* 2.6 秒等不到一个能用上的手势，才挨个把画面转正试试；哪个朝向认得出就锁哪个。
-         触发前提是「手已经检出来了、却给不出手势」——这正是画面躺着的特征；
-         连手都没有（没举起来、光线太暗）就别转，转了预览会一晃一晃的。
-         顺序先 90/270（安卓竖持最常见），再 180，最后回 0；试完一轮没中就回原样再等。 */
-      if (good) { S.lastGoodAt = now; S.probing = false; }
-      else if (!S.probing && S.hand && now - S.lastGoodAt > 2600) {
-        S.probing = true; S.rotIdx = 0; S.rot = ROT_CANDS[0]; S.probeSince = now;
-        layoutPreview();
+      /* 只在「竖着拿手机、镜头却给横帧」这个特征下才试朝向 —— 那是安卓 webview 的传感器朝向问题。
+         电脑上是横屏拿横帧，一律不许转，否则手一停就看见画面一格一格翻。
+         试的时候只转喂给模型的那份，屏上不动；真认出手势了才把显示一起转正。
+         一轮四档(90/270/180/原始)没中就退回去，最多三轮，三轮都不行就明说让用手点。 */
+      var swapSig = video.videoWidth > video.videoHeight && S.H > S.W;
+      if (good) {
+        S.lastGoodAt = now;
+        S.probing = false; S.sweeps = 0; S.rotGaveUp = false;
+        if (S.dispRot !== S.rot) { S.dispRot = S.rot; layoutPreview(); }
       } else if (S.probing && now - S.probeSince > 1400) {
         S.rotIdx++;
-        if (S.rotIdx >= ROT_CANDS.length) { S.probing = false; S.rot = 0; S.lastGoodAt = now; }
-        else { S.rot = ROT_CANDS[S.rotIdx]; S.probeSince = now; }
-        layoutPreview();
+        if (S.rotIdx >= ROT_CANDS.length) {
+          S.probing = false; S.rot = 0; S.sweeps++; S.lastGoodAt = now;
+          if (S.sweeps >= 3) { S.rotGaveUp = true; setStatus('镜头这边没认出手势', '点下面的按钮，效果一样'); }
+        } else { S.rot = ROT_CANDS[S.rotIdx]; S.probeSince = now; }
+      } else if (!S.probing && swapSig && !S.rotGaveUp && now - S.lastGoodAt > (S.sweeps ? 6000 : 2600)) {
+        S.probing = true; S.rotIdx = 0; S.rot = ROT_CANDS[0]; S.probeSince = now;
       }
     }
 
@@ -1046,7 +1056,10 @@
       if (ui.dbg && now - S.dbgAt > 250) {
         S.dbgAt = now;
         ui.dbg.textContent = '画面 ' + (video && video.videoWidth ? video.videoWidth + 'x' + video.videoHeight : '-')
-          + ' 转正=' + S.rot + (S.probing ? '(试第' + (S.rotIdx + 1) + '个)' : '')
+          + ' 推理转=' + S.rot + ' 显示转=' + S.dispRot
+          + (S.probing ? '(试第' + (S.rotIdx + 1) + '个)' : '')
+          + ' 横帧竖持=' + (video.videoWidth > video.videoHeight && S.H > S.W ? '是' : '否')
+          + ' 轮次=' + S.sweeps + (S.rotGaveUp ? '(已放弃)' : '')
           + ' 引擎=' + S.engineState + ' 次=' + S.detectCount
           + ' 手=' + (S.hand ? '有' : '无') + ' 手势=' + S.candidate + ' 分=' + S.lastScore.toFixed(2);
       }
@@ -1097,8 +1110,8 @@
       if (!S.cameraOn || !S.videoReady || !video.videoWidth || video.videoWidth < 160) return;
       var r = S.preview;
       var dim = convergeDim();
-      var e = effFrame();
-      var c = coverOf(e.w, e.h, r.w, r.h);
+      var f = effFrame();
+      var c = coverOf(f.w, f.h, r.w, r.h);
       S.cover = c;
       g.save();
       roundPath(g, r.x, r.y, r.w, r.h, r.r);
@@ -1106,7 +1119,7 @@
       g.globalAlpha = .58 * (1 - .86 * dim);
       g.translate(r.x + r.w, r.y);
       g.scale(-1, 1);
-      try { g.drawImage(frameForInfer(), c.sx, c.sy, c.sw, c.sh, 0, 0, r.w, r.h); } catch (e2) {}
+      try { g.drawImage(f.el, c.sx, c.sy, c.sw, c.sh, 0, 0, r.w, r.h); } catch (e2) {}
       g.globalAlpha = 1;
       g.restore();
       g.save();
@@ -1148,6 +1161,7 @@
     }
 
     function drawHand(g, now) {
+      if (S.probing) return;
       if (!S.hand || now - S.handAt > 700) return;
       var dim = convergeDim();
       if (dim > .55) return;
@@ -1204,7 +1218,8 @@
           modelBytes: S.modelBytes, detectCount: S.detectCount,
           gesture: S.candidate, hand: !!S.hand, effects: S.effects.length,
           touchMode: S.touchMode, inferMs: S.inferMs,
-          rot: S.rot, probing: S.probing, preview: S.preview,
+          rot: S.rot, dispRot: S.dispRot, probing: S.probing, sweeps: S.sweeps,
+          gaveUp: S.rotGaveUp, preview: S.preview,
           tracks: S.stream ? S.stream.getTracks().map(function (t) { return t.readyState; }) : []
         };
       },
