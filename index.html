@@ -2265,11 +2265,15 @@ function assign(pts, opts) {
   const keepColor = !!opts.keepColor;
   const n = Math.min(pts.length, opts.maxParts || 2400);
   ensureParts(Math.max(parts.length, n, 900));
+  /* fill=true：场上现有的每一颗粒子都改成成型粒子，多出来的按目标点循环复用。
+     日期用的粒子比蛋糕轮廓点多（2300 vs 577），以前多出来的被 park 甩去屏外，
+     一点「11.23」就像炸开一样四散；改成全体改道，日期是流过去变成蛋糕的。 */
+  const total = opts.fill ? parts.length : n;
   shuffle(pts);
   const now = performance.now();
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
-    if (i < n && pts.length) {
+    if (i < total && pts.length) {
       const pt = pts[i % pts.length];
       p.mode = 'seek';
       p.tx = ox + pt.x * scale + (Math.random() - .5) * (opts.jitter || 0);
@@ -2392,6 +2396,12 @@ function dateFlow() {
     p.t0 = performance.now() + 220 + (p.tx / W) * 520 + Math.random() * 280;
     p.vx = (Math.random() - .5) * 1.2;
     p.vy = (Math.random() - .5) * 1.2;
+    /* 出发点是「同一个字形放大 1.5-1.8 倍」：以前 ensureParts 把每颗撒在屏幕
+       随机位置上，第一帧就是满天散点再猛地收拢，看着像“先炸开再合上”。
+       现在起点和落点在同一条从中心发散的射线上，只剩“聚拢”这一种运动。 */
+    const zoom = 1.5 + Math.random() * .3;
+    p.x = W / 2 + (p.tx - W / 2) * zoom + (Math.random() - .5) * 12;
+    p.y = H / 2 + (p.ty - H / 2) * zoom + (Math.random() - .5) * 12;
   }
   dateAt = performance.now();
   partDim = 0;
@@ -2610,7 +2620,7 @@ function cakeStage(level) {
     assign(sampleEdges(snap, Math.max(4, Math.round(6 * res / (snap.width / 960)))), {
       scale: pl.k / res, ox: pl.ox, oy: pl.oy,
       size: 1.4, r: 246, g: 218, b: 233, jitter: .7,
-      maxParts: 2600, wave: 'tb', waveDur: 1200
+      maxParts: 2600, wave: 'tb', waveDur: 1200, fill: true
     });
     return;
   }
