@@ -2229,7 +2229,8 @@ function newPart(x, y) {
     t0: 0,
     size: 1 + Math.random() * 1.6, tsize: 2,
     r: 246, g: 224, b: 235, tr: 248, tg: 226, tb: 236,
-    mode: 'park', seed: Math.random() * 1000
+    mode: 'park', seed: Math.random() * 1000,
+    a: 1, fade: 0, k: .028, damp: .86
   };
 }
 function ensureParts(n) {
@@ -2263,19 +2264,19 @@ function assign(pts, opts) {
   const scale = opts.scale || 1;
   const ox = opts.ox || 0, oy = opts.oy || 0;
   const keepColor = !!opts.keepColor;
+  /* 每颗粒子自己的弹簧参数：日期的聚拢要比蛋糕轮廓更软，才不会「嗖」地一下收死 */
+  const k = opts.spring || .028, damp = opts.damp || .86;
   const n = Math.min(pts.length, opts.maxParts || 2400);
   ensureParts(Math.max(parts.length, n, 900));
-  /* fill=true：场上现有的每一颗粒子都改成成型粒子，多出来的按目标点循环复用。
-     日期用的粒子比蛋糕轮廓点多（2300 vs 577），以前多出来的被 park 甩去屏外，
-     一点「11.23」就像炸开一样四散；改成全体改道，日期是流过去变成蛋糕的。 */
-  const total = opts.fill ? parts.length : n;
   shuffle(pts);
   const now = performance.now();
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
-    if (i < total && pts.length) {
-      const pt = pts[i % pts.length];
+    p.k = k; p.damp = damp; p.fade = 0;
+    if (i < n && pts.length) {
       p.mode = 'seek';
+      p.a = 1;
+      const pt = pts[i % pts.length];
       p.tx = ox + pt.x * scale + (Math.random() - .5) * (opts.jitter || 0);
       p.ty = oy + pt.y * scale + (Math.random() - .5) * (opts.jitter || 0);
       p.tsize = opts.size || 1.8;
@@ -2295,6 +2296,8 @@ function assign(pts, opts) {
       }
     } else {
       p.mode = 'park';
+      p.a = 1;
+      p.fade = opts.fadePark || 0;
       const a = Math.random() * Math.PI * 2;
       const rad = Math.max(W, H) * (.62 + Math.random() * .22);
       p.tx = W / 2 + Math.cos(a) * rad;
@@ -2382,7 +2385,9 @@ function dateFlow() {
   assign(pts, {
     scale: sampled.scale, size: 1.5, jitter: 2.0,
     r: 248, g: 226, b: 236,
-    wave: null, maxParts: n
+    wave: null, maxParts: n,
+    /* 软一点的弹簧：满屏散点慢慢被吸回来，别「嗖」地一下收死 */
+    spring: .010, damp: .89
   });
   // 少量玫瑰粉 / 粉紫粒子，避免一片死白；大小与光晕也拉开层次
   for (let i = 0; i < parts.length; i++) {
@@ -2394,14 +2399,11 @@ function dateFlow() {
     p.tsize = i % 9 === 0 ? 1.45 + Math.random() * .4 : .7 + Math.random() * .4;
     p.glow = i % 12 === 0;
     p.t0 = performance.now() + 220 + (p.tx / W) * 520 + Math.random() * 280;
-    p.vx = (Math.random() - .5) * 1.2;
-    p.vy = (Math.random() - .5) * 1.2;
-    /* 出发点是「同一个字形放大 1.5-1.8 倍」：以前 ensureParts 把每颗撒在屏幕
-       随机位置上，第一帧就是满天散点再猛地收拢，看着像“先炸开再合上”。
-       现在起点和落点在同一条从中心发散的射线上，只剩“聚拢”这一种运动。 */
-    const zoom = 1.5 + Math.random() * .3;
-    p.x = W / 2 + (p.tx - W / 2) * zoom + (Math.random() - .5) * 12;
-    p.y = H / 2 + (p.ty - H / 2) * zoom + (Math.random() - .5) * 12;
+    /* 散开的底子：起点满屏随机，等 t0 之前先被一点点向外推——先铺开，再慢慢收拢 */
+    p.x = Math.random() * W;
+    p.y = Math.random() * H;
+    p.vx = (Math.random() - .5) * 1.2 + (p.x - W / 2) * .004;
+    p.vy = (Math.random() - .5) * 1.2 + (p.y - H / 2) * .004;
   }
   dateAt = performance.now();
   partDim = 0;
@@ -2620,8 +2622,20 @@ function cakeStage(level) {
     assign(sampleEdges(snap, Math.max(4, Math.round(6 * res / (snap.width / 960)))), {
       scale: pl.k / res, ox: pl.ox, oy: pl.oy,
       size: 1.4, r: 246, g: 218, b: 233, jitter: .7,
-      maxParts: 2600, wave: 'tb', waveDur: 1200, fill: true
+      maxParts: 2600, wave: 'tb', waveDur: 700,
+      spring: .012, damp: .89, fadePark: .02
     });
+    /* 点下去先碎开：整片日期向外炸开一拍，再按从上到下的顺序流成蛋糕轮廓；
+       多出来的两千多颗同样炸出去，并在 0.8s 里淡掉。是「碎开 → 重组」，
+       不是原地硬切，也不是一口气甩到屏外。 */
+    for (const p of parts) {
+      const dx = p.x - W / 2, dy = p.y - H / 2;
+      const d = Math.hypot(dx, dy) || 1;
+      const sp = 2.4 + Math.random() * 4.2;
+      p.vx = dx / d * sp + (Math.random() - .5) * 1.8;
+      p.vy = dy / d * sp + (Math.random() - .5) * 1.8;
+      if (p.mode === 'seek') p.t0 += 180;   // 先让碎开这一拍露出来，再开始收
+    }
     return;
   }
   renderCakeCanvas();
@@ -3952,22 +3966,31 @@ function physics(t) {
   /* 吹灭：亮度包络走慢，让火苗有 0.35s 拉长再熄的过程；点火仍用原来的快追值 */
   const flameDying = blowAt && t - blowAt >= 0 && t - blowAt < 400;
   flameFade += ((flameAlive ? 1 : 0) - flameFade) * (flameDying ? .05 : .2);
-  if (stage === 1) partDim = Math.max(0, Math.min(1, (t - dateAt) / 520));
+  /* 日期的亮起用缓入：原来线性 0→1，前 100ms 就冒出大半，看着是「啪」地铺满 */
+  if (stage === 1) partDim = smooth(Math.min(1, (t - dateAt) / 700));
 
   for (const p of parts) {
     if (p.mode === 'park') {
+      /* 多出来的粒子带着初速向外飞、同时淡掉（fade>0）；没有 fade 的仍慢慢归到屏外圈 */
+      if (p.fade > 0) {
+        p.vx *= .965; p.vy *= .965;
+        p.x += p.vx; p.y += p.vy;
+        p.a = Math.max(0, p.a - p.fade);
+        continue;
+      }
       p.x += (p.tx - p.x) * .02;
       p.y += (p.ty - p.y) * .02;
       continue;
     }
     if (p.t0 && t < p.t0) {
-      p.vx *= .9; p.vy *= .9;
+      /* 起手前保持爆开的速度、被空气一点点拽住：先铺开，再逐排收拢 */
+      p.vx *= .94; p.vy *= .94;
       p.x += p.vx; p.y += p.vy;
       continue;
     }
-    p.vx += (p.tx - p.x) * .028;
-    p.vy += (p.ty - p.y) * .028;
-    p.vx *= .86; p.vy *= .86;
+    p.vx += (p.tx - p.x) * p.k;
+    p.vy += (p.ty - p.y) * p.k;
+    p.vx *= p.damp; p.vy *= p.damp;
     const dx = p.x - pointer.x, dy = p.y - pointer.y;
     const d2 = dx * dx + dy * dy;
     if (d2 < 9200) {
@@ -4082,26 +4105,32 @@ function drawCakeLayer(t) {
 function drawParticles() {
   if (partDim <= .01) return;
   ctx.save();
+  let lastA = -1;
   for (const p of parts) {
-    if (p.mode === 'park' && (p.x < -20 || p.x > W + 20 || p.y < -20 || p.y > H + 20)) continue;
+    /* 成形时多出来的那批粒子一边向外飞一边淡掉；alpha 到 0 就不再画。
+       这一条把第二幕的绘制量从两千多颗压回蛋糕轮廓的 577 颗，是这次卡顿的主因。 */
+    const pa = partDim * (p.a === undefined ? 1 : p.a);
+    if (pa <= .012) continue;
+    if (p.x < -24 || p.x > W + 24 || p.y < -24 || p.y > H + 24) continue;
     if (p.glow) {
       const gs = 7 + p.size * 2.6;
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = .15 * partDim;
+      ctx.globalAlpha = .15 * pa;
       ctx.drawImage(starGlow, p.x - gs / 2, p.y - gs / 2, gs, gs);
       ctx.globalCompositeOperation = 'source-over';
+      lastA = -1;
     }
-    ctx.globalAlpha = partDim;
-    ctx.fillStyle = 'rgb(' + (p.r | 0) + ',' + (p.g | 0) + ',' + (p.b | 0) + ')';
-    if (p.size > 2.05) {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size / 2 + .2, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size / 2 + .35, 0, Math.PI * 2);
-      ctx.fill();
+    if (pa !== lastA) { ctx.globalAlpha = pa; lastA = pa; }
+    /* 颜色按整数缓存：稳定后不再每帧给 577 颗粒子各拼一次字符串 */
+    const cr = p.r | 0, cg = p.g | 0, cb = p.b | 0;
+    if (p.cr !== cr || p.cg !== cg || p.cb !== cb) {
+      p.cr = cr; p.cg = cg; p.cb = cb;
+      p.cs = 'rgb(' + cr + ',' + cg + ',' + cb + ')';
     }
+    ctx.fillStyle = p.cs;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size / 2 + (p.size > 2.05 ? .2 : .35), 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.restore();
 }
