@@ -2143,7 +2143,23 @@ function glowSprite(size, inner, mid, outer) {
 }
 const goldGlow = glowSprite(128, 'rgba(255,224,210,.95)', 'rgba(255,158,184,.30)', 'rgba(226,108,151,0)');
 const starGlow = glowSprite(64, 'rgba(255,239,247,.95)', 'rgba(237,185,218,.22)', 'rgba(210,153,205,0)');
-const smokeSprite = glowSprite(128, 'rgba(236,220,228,.50)', 'rgba(214,194,207,.18)', 'rgba(190,170,184,0)');
+/* 烟团单独做：glowSprite 只有三档色标，40% 半径处斜率突变，十几团一叠就是一圈圈的波纹。
+   这里给 12 档余弦平方衰减，边缘真正收到 0，放大看也没有环。 */
+function smokeSpriteBuild(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const x = c.getContext('2d');
+  const gr = x.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  for (let i = 0; i <= 12; i++) {
+    const p = i / 12;
+    const a = .26 * Math.pow(Math.cos(p * Math.PI / 2), 2.4);
+    gr.addColorStop(p, 'rgba(222,206,216,' + a.toFixed(4) + ')');
+  }
+  x.fillStyle = gr;
+  x.fillRect(0, 0, size, size);
+  return c;
+}
+const smokeSprite = smokeSpriteBuild(128);
 
 /* ================= 星野 ================= */
 const stars = [];
@@ -2603,7 +2619,7 @@ let flameAlive = false, smokeOn = false;
 let flameFade = 0;              // 火苗亮度包络：0 灭 / 1 亮，让点火与吹灭都是渐变
 let blowAt = 0;                  // 吹灭瞬间：火苗先拉长 0.35s 再收
 let blowBreathAnim = null;
-let lastEmber = 0;
+let lastEmber = 0, lastSmoke = 0;
 
 function flameAnchors() {
   const pl = cakePlacement();
@@ -2637,16 +2653,18 @@ function spawnSparks(n, spread) {
 
 function spawnSmoke(burst) {
   for (const a of flameAnchors()) {
-    const n = burst ? 14 : 1;
+    /* 吹灭那一下原来一次抛 14 颗，糊成一整团白雾。熄灯只给 3 小团，
+       之后由下面那条 90ms 定频口一根根续上，才像一缕烟而不是一团棉花。 */
+    const n = burst ? 4 : 1;
     for (let i = 0; i < n; i++) {
       fx.push({
         type: 'smoke',
-        x: a.x + (Math.random() - .5) * (burst ? 14 : 4),
-        y: a.y - Math.random() * 8,
-        vx: (Math.random() - .5) * (burst ? .9 : .3),
-        vy: -.22 - Math.random() * .5,
-        life: 0, max: 90 + Math.random() * 80,
-        size: 2.2 + Math.random() * 4.2
+        x: a.x + (Math.random() - .5) * (burst ? 6 : 2.4),
+        y: a.y - Math.random() * 5,
+        vx: (Math.random() - .5) * .18,
+        vy: -.20 - Math.random() * .30,
+        life: 0, max: 110 + Math.random() * 60,
+        size: 2.0 + Math.random() * 2.6
       });
     }
   }
@@ -2750,8 +2768,8 @@ function drawSmoke() {
   for (const f of fx) {
     if (f.type !== 'smoke') continue;
     const t = f.life / f.max;
-    const a = .30 * (1 - t) * Math.min(1, t * 8);
-    const s = f.size * (1 + t * 1.9);
+    const a = .70 * (1 - t) * Math.min(1, t * 6);
+    const s = f.size * (1 + t * 1.5);
     ctx.globalAlpha = a;
     ctx.drawImage(smokeSprite, f.x - s, f.y - s, s * 2, s * 2);
   }
@@ -3961,7 +3979,8 @@ function physics(t) {
       });
     }
   }
-  if (smokeOn && Math.random() < .5) spawnSmoke(false);
+  /* 定频续烟，别按帧掷骰子：一帧一半概率会让烟一团一团地蹦 */
+  if (smokeOn && t - lastSmoke > 60) { lastSmoke = t; spawnSmoke(false); }
 
   for (let i = fx.length - 1; i >= 0; i--) {
     const f = fx[i];
