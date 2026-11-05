@@ -3089,10 +3089,18 @@ function formUpdate() {
     flameAlive = true;
     if (cake3D) cake3D.setFlames(true);
     spawnSparks(2, .9);
-  }
-  if (formT > 4250) {
-    formT = 0;
-    setStage(3);
+    /* 蛋糕成型、蜡烛点亮的那一帧就原地接管成第 3 幕：同一块蛋糕、同一个机位，
+       只是提示从「按住可以加速」换成「长按，吹灭蜡烛」。以前这里还要再走一次
+       章节转场、落到一张一模一样的第二页，长按到一半被 clearPress 掐掉，
+       得松手重按——同一步要按两次。 */
+    const holding = pointer.down;
+    applyStage(3, true);
+    if (holding) {
+      pointer.down = true;
+      pressAt = performance.now();
+      pressTimer = setTimeout(function() { blowOut(); }, 540);
+      setHint('继续按住，别松', true);
+    }
   }
 }
 
