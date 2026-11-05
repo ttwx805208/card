@@ -189,7 +189,7 @@
       noneSince: 0,
       statusKey: '', effects: [], touchMode: false, started: false,
       intro: true, error: '', detectCount: 0, lastInfer: 0, inferMs: 0,
-      introTimer: 0, entry: null, prevOverflow: '', dbgAt: 0, lastScore: 0,
+      introTimer: 0, entry: null, prevOverflow: '',
       /* 朝向自校准：微信安卓那边给的是「传感器朝向」的横屏帧，画面躺了 90°，
          手能检出来、手势分类器却一律给 None —— 于是怎么比划都不触发。 */
       rot: 0, dispRot: 0, rotIdx: -1, probing: false, probeSince: 0, lastGoodAt: 0,
@@ -264,8 +264,7 @@
         cardP: root.querySelector('.card p'),
         cardRow: root.querySelector('.card .row'),
         video: root.querySelector('.cam'),
-        sr: root.querySelector('.sr'),
-        dbg: null
+        sr: root.querySelector('.sr')
       };
       ui.eyebrow.textContent = cfg.eyebrow;
       ui.h1.textContent = cfg.title;
@@ -277,12 +276,6 @@
       video.muted = true;
 
       document.body.appendChild(host);
-      if (/[?&]wcdebug=1/.test(location.search)) {
-        var dbg = document.createElement('div');
-        dbg.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:2147482001;font:11px/1.5 ui-monospace,Consolas,monospace;color:#efe2c4;background:rgba(10,8,14,.72);padding:6px 9px;border-radius:6px;white-space:pre;pointer-events:none;';
-        root.appendChild(dbg);
-        ui.dbg = dbg;
-      }
       bind();
       resize();
       buildSprites();
@@ -670,7 +663,6 @@
         var g = res.gestures && res.gestures.length ? res.gestures[0][0] : null;
         var name = g ? g.categoryName : 'None';
         var score = g ? g.score : 0;
-        S.lastScore = score;
         if (score >= .55) {
           S.noneSince = 0;
           if (name === S.candidate) S.candN++;
@@ -1053,16 +1045,6 @@
       dt = Math.min(dt, .05);
       S.lastFrame = now;
       detect(now);
-      if (ui.dbg && now - S.dbgAt > 250) {
-        S.dbgAt = now;
-        ui.dbg.textContent = '画面 ' + (video && video.videoWidth ? video.videoWidth + 'x' + video.videoHeight : '-')
-          + ' 推理转=' + S.rot + ' 显示转=' + S.dispRot
-          + (S.probing ? '(试第' + (S.rotIdx + 1) + '个)' : '')
-          + ' 横帧竖持=' + (video.videoWidth > video.videoHeight && S.H > S.W ? '是' : '否')
-          + ' 轮次=' + S.sweeps + (S.rotGaveUp ? '(已放弃)' : '')
-          + ' 引擎=' + S.engineState + ' 次=' + S.detectCount
-          + ' 手=' + (S.hand ? '有' : '无') + ' 手势=' + S.candidate + ' 分=' + S.lastScore.toFixed(2);
-      }
       for (var i = S.effects.length - 1; i >= 0; i--) {
         var f = S.effects[i];
         if (f.update) f.update(now, dt);
